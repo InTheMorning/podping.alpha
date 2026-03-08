@@ -58,6 +58,17 @@ The container runs as a non-root user (UID 1000) with `/data` as the working
 directory, so mount a writable volume if you want to persist node keys and
 known peers.
 
+### With Docker Compose
+
+Use the dedicated compose file:
+
+```sh
+docker compose -f docker/docker-compose.gossip-listener.yaml up -d
+```
+
+Data is stored under `./data/gossip-listener` by default, and the compose file
+sets the `*_FILE` environment variables to `/data/...` paths for persistence.
+
 ## Configuration
 
 All configuration is via environment variables. Every variable is optional.
