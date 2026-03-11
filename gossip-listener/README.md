@@ -46,7 +46,10 @@ VERSION="v1.2.3"
 OS=linux # linux | macos | windows
 ARCH=x86_64 # x86_64 | aarch64
 URL="https://github.com/<owner>/<repo>/releases/download/${VERSION}/gossip-listener-${VERSION}-${OS}-${ARCH}.tar.gz"
+SHA_URL="${URL}.sha256"
 curl -L "$URL" -o gossip-listener.tar.gz
+curl -L "$SHA_URL" -o gossip-listener.tar.gz.sha256
+shasum -a 256 -c gossip-listener.tar.gz.sha256
 tar -xzf gossip-listener.tar.gz
 ./gossip-listener
 ```
@@ -56,7 +59,12 @@ Windows (PowerShell):
 ```powershell
 $Version = "v1.2.3"
 $Url = "https://github.com/<owner>/<repo>/releases/download/$Version/gossip-listener-$Version-windows-x86_64.zip"
+$ShaUrl = "$Url.sha256"
 Invoke-WebRequest -Uri $Url -OutFile gossip-listener.zip
+Invoke-WebRequest -Uri $ShaUrl -OutFile gossip-listener.zip.sha256
+$Expected = (Get-Content gossip-listener.zip.sha256).Split(' ')[0].ToLower()
+$Actual = (Get-FileHash -Algorithm SHA256 -Path gossip-listener.zip).Hash.ToLower()
+if ($Expected -ne $Actual) { throw "SHA256 mismatch" }
 Expand-Archive -Path gossip-listener.zip -DestinationPath .
 ./gossip-listener.exe
 ```

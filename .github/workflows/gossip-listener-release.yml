@@ -74,3 +74,22 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.artifact_name }}
+
+      - name: Generate checksums
+        if: ${{ matrix.os != 'windows-latest' }}
+        run: |
+          cd dist
+          shasum -a 256 "${{ matrix.artifact_name }}" > "${{ matrix.artifact_name }}.sha256"
+
+      - name: Generate checksums (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: |
+          $Path = "dist\${{ matrix.artifact_name }}"
+          $Hash = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLower()
+          "$Hash  ${{ matrix.artifact_name }}" | Out-File -Encoding ascii -FilePath "dist\${{ matrix.artifact_name }}.sha256"
+        shell: pwsh
+
+      - name: Upload checksum asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.artifact_name }}.sha256
