@@ -601,7 +601,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pull_socket.set_rcvtimeo(1000).unwrap(); // 1s recv timeout for shutdown checks
         pull_socket.set_sndtimeo(100).unwrap(); // 100ms send timeout for replies
         pull_socket.set_linger(0).unwrap();
-        pull_socket.bind(&zmq_bind_clone).unwrap();
+        if let Err(e) = pull_socket.bind(&zmq_bind_clone) {
+            eprintln!("\x1b[1;31m[FATAL] Cannot bind ZMQ socket on {}: {} (is another gossip-writer already running?)\x1b[0m", zmq_bind_clone, e);
+            std::process::exit(1);
+        }
         println!("  ZMQ PAIR socket bound on {}", zmq_bind_clone);
 
         let mut pending: Vec<PendingPing> = Vec::new();
