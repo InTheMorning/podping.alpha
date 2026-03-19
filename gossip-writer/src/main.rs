@@ -377,6 +377,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Peer friendly name tracking
     let peer_names: Arc<RwLock<HashMap<String, String>>> = Arc::new(RwLock::new(HashMap::new()));
 
+    // Health tracking counters
+    let health_broadcasts_sent = Arc::new(AtomicU64::new(0));
+    let health_broadcasts_failed = Arc::new(AtomicU64::new(0));
+    let health_last_broadcast_ok = Arc::new(AtomicU64::new(now_secs));
+    let health_broadcast_task_alive = Arc::new(AtomicBool::new(true));
+
     // Spawn the initial receive task
     spawn_receive_task(
         gossip_receiver,
@@ -392,6 +398,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Async broadcast task (with reconnection) ---
     let broadcast_shared = shared_sender.clone();
     let broadcast_shutdown = shutdown.clone();
+    let bcast_sent = health_broadcasts_sent.clone();
+    let bcast_failed = health_broadcasts_failed.clone();
+    let bcast_last_ok = health_last_broadcast_ok.clone();
+    let bcast_alive = health_broadcast_task_alive.clone();
     let reconnect_gossip = gossip.clone();
     let reconnect_node_key_bytes = node_key_bytes;
     let reconnect_dht_secret = dht_initial_secret.clone();
@@ -414,12 +424,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             match result {
                 Ok(_) => {
+                    bcast_sent.fetch_add(1, Ordering::Relaxed);
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                    bcast_last_ok.store(now, Ordering::Relaxed);
                     if consecutive_failures >= 3 {
                         println!("\x1b[32m[BROADCAST] Gossip broadcast recovered after {} failures\x1b[0m", consecutive_failures);
                     }
                     consecutive_failures = 0;
                 }
                 Err(e) => {
+                    bcast_failed.fetch_add(1, Ordering::Relaxed);
                     consecutive_failures += 1;
                     if consecutive_failures <= 3 {
                         eprintln!("\x1b[35m[WARN] Gossip broadcast error: {}\x1b[0m", e);
@@ -484,6 +498,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        bcast_alive.store(false, Ordering::Relaxed);
+        eprintln!("\x1b[1;31m[HEALTH] Broadcast task exited!\x1b[0m");
     });
 
     // --- Periodic PeerAnnounce task ---
@@ -589,6 +605,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // (receive task is spawned above via spawn_receive_task and re-spawned on reconnect)
+
+    // --- Periodic health report ---
+    {
+        let h_sent = health_broadcasts_sent.clone();
+        let h_failed = health_broadcasts_failed.clone();
+        let h_last_ok = health_last_broadcast_ok.clone();
+        let h_alive = health_broadcast_task_alive.clone();
+        let h_shutdown = shutdown.clone();
+        let h_tx = tx.clone();
+        tokio::spawn(async move {
+            let mut prev_sent: u64 = 0;
+            let mut prev_failed: u64 = 0;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                if h_shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                let sent = h_sent.load(Ordering::Relaxed);
+                let failed = h_failed.load(Ordering::Relaxed);
+                let last_ok = h_last_ok.load(Ordering::Relaxed);
+                let alive = h_alive.load(Ordering::Relaxed);
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                let since_last = now.saturating_sub(last_ok);
+                let delta_sent = sent - prev_sent;
+                let delta_failed = failed - prev_failed;
+                let queue_len = h_tx.max_capacity() - h_tx.capacity();
+
+                let status = if !alive {
+                    "\x1b[1;31mBROADCAST TASK DEAD\x1b[0m"
+                } else if since_last > REBOOTSTRAP_TIMEOUT {
+                    "\x1b[1;31mSTALLED\x1b[0m"
+                } else if delta_failed > 0 {
+                    "\x1b[33mDEGRADED\x1b[0m"
+                } else {
+                    "\x1b[32mOK\x1b[0m"
+                };
+
+                println!(
+                    "\x1b[90m[HEALTH] {} | sent={} failed={} | queue={}/1000 | last_ok={}s ago\x1b[0m",
+                    status, delta_sent, delta_failed, queue_len, since_last,
+                );
+
+                prev_sent = sent;
+                prev_failed = failed;
+            }
+        });
+    }
 
     // --- ZMQ receive loop (blocking, runs in spawn_blocking) ---
     let zmq_bind_clone = zmq_bind.clone();
