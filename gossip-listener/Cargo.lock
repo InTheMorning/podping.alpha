@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "gossip-listener"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1252,6 +1252,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tokio-stream",
+ "tracing-subscriber",
 ]
 
 [[package]]
