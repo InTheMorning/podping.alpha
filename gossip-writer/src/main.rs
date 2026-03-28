@@ -182,6 +182,10 @@ struct PendingPing {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     // WORKAROUND: iroh-quinn 0.16.1 panic resilience
     // iroh-quinn has a bug where a connection panic triggers a double-panic abort
     // (first panic poisons a mutex, destructor panics acquiring it, Rust aborts).
