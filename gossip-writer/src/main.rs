@@ -184,9 +184,11 @@ struct PendingPing {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Write tracing output to fd 3 if available, otherwise stderr
+    // Write tracing output to fd 3 if available and writable, otherwise stderr
     let trace_writer: Box<dyn std::io::Write + Send + Sync> = unsafe {
-        if libc::fcntl(3, libc::F_GETFD) != -1 {
+        let flags = libc::fcntl(3, libc::F_GETFL);
+        let writable = flags != -1 && (flags & libc::O_ACCMODE) != libc::O_RDONLY;
+        if writable {
             Box::new(std::fs::File::from_raw_fd(3))
         } else {
             Box::new(std::io::stderr())
