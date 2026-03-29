@@ -184,11 +184,16 @@ struct PendingPing {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Write tracing output to fd 3 if available and writable, otherwise stderr
+    // Write tracing output to fd 3 if it is a pipe or regular file, otherwise stderr.
+    // Checking the file type avoids using sockets or other fds that are "open" but
+    // reject write() with EINVAL (e.g. systemd-inherited fds).
     let trace_writer: Box<dyn std::io::Write + Send + Sync> = unsafe {
-        let flags = libc::fcntl(3, libc::F_GETFL);
-        let writable = flags != -1 && (flags & libc::O_ACCMODE) != libc::O_RDONLY;
-        if writable {
+        let mut stat: libc::stat = std::mem::zeroed();
+        let fd3_ok = libc::fstat(3, &mut stat) == 0 && {
+            let ft = stat.st_mode & libc::S_IFMT;
+            ft == libc::S_IFIFO || ft == libc::S_IFREG
+        };
+        if fd3_ok {
             Box::new(std::fs::File::from_raw_fd(3))
         } else {
             Box::new(std::io::stderr())
