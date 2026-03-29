@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::Write;
@@ -16,6 +16,7 @@ use iroh::SecretKey;
 use iroh_gossip::api::Event;
 use iroh_gossip::net::Gossip;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 use distributed_topic_tracker::{AutoDiscoveryGossip, RecordPublisher, TopicId as DttTopicId,
     GossipSender as DttGossipSender, GossipReceiver as DttGossipReceiver};
 
@@ -636,6 +637,9 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(tokio::sync::RwLock::new(gossip_sender));
     let broadcast_failures = Arc::new(AtomicU64::new(0));
     let notifications_received = Arc::new(AtomicU64::new(0));
+    let reconnect_requested = Arc::new(AtomicBool::new(false));
+    let reconnect_notify = Arc::new(Notify::new());
+    let receive_generation = Arc::new(AtomicU64::new(0));
 
     //Joining peers from the known peers file serves as fallback/insurance if DHT no work
     let mut bootstrap_peers: Vec<iroh::EndpointId> = bootstrap_peer_ids_str
@@ -827,6 +831,8 @@ async fn main() -> anyhow::Result<()> {
     // --- Reconnection monitor: watches for consecutive broadcast failures ---
     {
         let reconnect_failures = broadcast_failures.clone();
+        let reconnect_requested = reconnect_requested.clone();
+        let reconnect_notify = reconnect_notify.clone();
         let reconnect_shared = shared_sender.clone();
         let reconnect_endpoint = endpoint.clone();
         let reconnect_node_key_bytes = node_key_bytes;
@@ -840,14 +846,19 @@ async fn main() -> anyhow::Result<()> {
         let reconnect_db = db.clone();
         let reconnect_sse_tx = sse_tx.clone();
         let reconnect_notif_count = notifications_received.clone();
+        let reconnect_receive_generation = receive_generation.clone();
         tokio::spawn(async move {
             // Keep the router alive in this task; on reconnect we replace it
             // (dropping the old router aborts its accept loop without closing the endpoint)
             let mut _current_router = router;
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                    _ = reconnect_notify.notified() => {}
+                }
                 let failures = reconnect_failures.load(Ordering::Relaxed);
-                if failures >= RECONNECT_AFTER_FAILURES {
+                let requested = reconnect_requested.swap(false, Ordering::Relaxed);
+                if failures >= RECONNECT_AFTER_FAILURES || requested {
                     eprintln!("\x1b[1;31m[RECONNECT] {} consecutive broadcast failures — reconnecting gossip topic...\x1b[0m", failures);
 
                     let dht_key = ed25519_dalek::SigningKey::from_bytes(&reconnect_node_key_bytes);
@@ -895,9 +906,15 @@ async fn main() -> anyhow::Result<()> {
                                     reconnect_trusted_file.clone(),
                                     reconnect_last_notif.clone(),
                                     reconnect_db.clone(),
+                                    Arc::new(Mutex::new(None)),
                                     reconnect_peer_names.clone(),
                                     reconnect_sse_tx.clone(),
                                     reconnect_notif_count.clone(),
+                                    reconnect_failures.clone(),
+                                    reconnect_requested.clone(),
+                                    reconnect_notify.clone(),
+                                    reconnect_receive_generation.clone(),
+                                    reconnect_receive_generation.fetch_add(1, Ordering::Relaxed) + 1,
                                 );
 
                                 println!("\x1b[32m[RECONNECT] Gossip topic reconnected successfully.\x1b[0m");
@@ -1003,28 +1020,28 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(Mutex::new(None))
     };
 
-    // Main receive loop — runs until CTRL+C or stream ends
-    let recv_peer_names = peer_names.clone();
-    let shutdown = tokio::signal::ctrl_c();
-    tokio::pin!(shutdown);
-    loop {
-        tokio::select! {
-            item = gossip_receiver.next() => {
-                match item {
-                    Some(Ok(event)) => handle_event(event, &peers_file, &my_node_id, &trusted_publishers, &trusted_publishers_file, &last_notification_time, &db, &neighbor_tx_for_event, &recv_peer_names, &sse_tx, &notifications_received),
-                    Some(Err(e)) => eprintln!("[error] gossip stream error: {e}"),
-                    None => {
-                        println!("[info] gossip stream ended");
-                        break;
-                    }
-                }
-            }
-            _ = &mut shutdown => {
-                println!("\n[info] shutting down...");
-                break;
-            }
-        }
-    }
+    let initial_receive_generation = receive_generation.fetch_add(1, Ordering::Relaxed) + 1;
+    spawn_receive_task(
+        gossip_receiver,
+        peers_file.clone(),
+        my_node_id,
+        trusted_publishers.clone(),
+        trusted_publishers_file.clone(),
+        last_notification_time.clone(),
+        db.clone(),
+        neighbor_tx_for_event.clone(),
+        peer_names.clone(),
+        sse_tx.clone(),
+        notifications_received.clone(),
+        broadcast_failures.clone(),
+        reconnect_requested.clone(),
+        reconnect_notify.clone(),
+        receive_generation.clone(),
+        initial_receive_generation,
+    );
+
+    tokio::signal::ctrl_c().await?;
+    println!("\n[info] shutting down...");
 
     endpoint.close().await;
     println!("[info] goodbye");
@@ -1390,14 +1407,16 @@ fn spawn_receive_task(
     trusted_publishers_file: String,
     last_notification_time: Arc<AtomicU64>,
     db: Option<Arc<Mutex<archive::Archive>>>,
+    neighbor_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<iroh::EndpointId>>>>,
     peer_names: Arc<RwLock<HashMap<String, String>>>,
     sse_tx: Option<tokio::sync::broadcast::Sender<String>>,
     notifications_received: Arc<AtomicU64>,
+    reconnect_failures: Arc<AtomicU64>,
+    reconnect_requested: Arc<AtomicBool>,
+    reconnect_notify: Arc<Notify>,
+    receive_generation_counter: Arc<AtomicU64>,
+    receive_generation: u64,
 ) {
-    // Neighbor forwarding is not available on reconnect (catch-up is a startup-only feature)
-    let neighbor_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<iroh::EndpointId>>>> =
-        Arc::new(Mutex::new(None));
-
     tokio::spawn(async move {
         while let Some(event) = receiver.next().await {
             match event {
@@ -1421,5 +1440,11 @@ fn spawn_receive_task(
             }
         }
         println!("\x1b[33m[RECV] Gossip receive task ended.\x1b[0m");
+        if receive_generation_counter.load(Ordering::Relaxed) == receive_generation {
+            eprintln!("\x1b[1;31m[RECONNECT] Active receive task exited — reconnecting gossip topic...\x1b[0m");
+            reconnect_failures.store(RECONNECT_AFTER_FAILURES, Ordering::Relaxed);
+            reconnect_requested.store(true, Ordering::Relaxed);
+            reconnect_notify.notify_one();
+        }
     });
 }

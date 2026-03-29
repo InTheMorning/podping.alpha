@@ -420,6 +420,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let broadcast_failures = Arc::new(AtomicU64::new(0));
     let reconnect_requested = Arc::new(AtomicBool::new(false));
     let reconnect_notify = Arc::new(Notify::new());
+    let receive_generation = Arc::new(AtomicU64::new(0));
 
     // --- Optionally join bootstrap peers ---
     let mut bootstrap_peers: Vec<iroh::EndpointId> = bootstrap_peer_ids_str
@@ -459,6 +460,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .as_secs();
     let last_notification_time = Arc::new(AtomicU64::new(now_secs));
+    let initial_receive_generation = receive_generation.fetch_add(1, Ordering::Relaxed) + 1;
 
     // Peer friendly name tracking
     let peer_names: Arc<RwLock<HashMap<String, String>>> = Arc::new(RwLock::new(HashMap::new()));
@@ -479,6 +481,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auto_trust_endorsements,
         last_notification_time.clone(),
         peer_names.clone(),
+        broadcast_failures.clone(),
+        reconnect_requested.clone(),
+        reconnect_notify.clone(),
+        receive_generation.clone(),
+        initial_receive_generation,
     );
 
     // --- Async broadcast task (with reconnection) ---
@@ -501,6 +508,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reconnect_auto_trust = auto_trust_endorsements;
     let reconnect_last_notif = last_notification_time.clone();
     let reconnect_peer_names = peer_names.clone();
+    let reconnect_receive_generation = receive_generation.clone();
     tokio::spawn(async move {
         // Keep the router alive in this task; on reconnect we replace it
         // (dropping the old router aborts its accept loop without closing the endpoint)
@@ -537,6 +545,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 reconnect_auto_trust,
                                 reconnect_last_notif.clone(),
                                 reconnect_peer_names.clone(),
+                                bcast_failure_count.clone(),
+                                bcast_reconnect_requested.clone(),
+                                bcast_reconnect_notify.clone(),
+                                reconnect_receive_generation.clone(),
+                                reconnect_receive_generation.fetch_add(1, Ordering::Relaxed) + 1,
                             );
 
                             consecutive_failures = 0;
@@ -625,6 +638,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     reconnect_auto_trust,
                                     reconnect_last_notif.clone(),
                                     reconnect_peer_names.clone(),
+                                    bcast_failure_count.clone(),
+                                    bcast_reconnect_requested.clone(),
+                                    bcast_reconnect_notify.clone(),
+                                    reconnect_receive_generation.clone(),
+                                    reconnect_receive_generation.fetch_add(1, Ordering::Relaxed) + 1,
                                 );
 
                                 // Drain retry queue through new sender
@@ -1348,6 +1366,11 @@ fn spawn_receive_task(
     auto_trust_endorsements: bool,
     last_notification_time: Arc<AtomicU64>,
     peer_names: Arc<RwLock<HashMap<String, String>>>,
+    reconnect_failures: Arc<AtomicU64>,
+    reconnect_requested: Arc<AtomicBool>,
+    reconnect_notify: Arc<Notify>,
+    receive_generation_counter: Arc<AtomicU64>,
+    receive_generation: u64,
 ) {
     tokio::spawn(async move {
         while let Some(event) = receiver.next().await {
@@ -1497,5 +1520,13 @@ fn spawn_receive_task(
             }
         }
         println!("\x1b[33m[RECV] Gossip receive task ended.\x1b[0m");
+        if receive_generation_counter.load(Ordering::Relaxed) == receive_generation {
+            eprintln!(
+                "\x1b[1;31m[RECONNECT] Active receive task exited — reconnecting gossip topic...\x1b[0m"
+            );
+            reconnect_failures.store(RECONNECT_AFTER_FAILURES, Ordering::Relaxed);
+            reconnect_requested.store(true, Ordering::Relaxed);
+            reconnect_notify.notify_one();
+        }
     });
 }
