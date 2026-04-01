@@ -893,6 +893,7 @@ async fn main() -> anyhow::Result<()> {
             // Keep the router alive in this task; on reconnect we replace it
             // (dropping the old router aborts its accept loop without closing the endpoint)
             let mut _current_router = router;
+            let mut last_reconnect = std::time::Instant::now();
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
@@ -906,6 +907,11 @@ async fn main() -> anyhow::Result<()> {
                 if failures >= RECONNECT_AFTER_FAILURES || requested {
                     // Reset failures immediately to prevent re-entrant reconnects
                     reconnect_failures.store(0, Ordering::Relaxed);
+
+                    if last_reconnect.elapsed() < std::time::Duration::from_secs(30) {
+                        eprintln!("\x1b[33m[RECONNECT] Skipping — reconnect cooldown active\x1b[0m");
+                        continue;
+                    }
 
                     eprintln!("\x1b[1;31m[RECONNECT] {} consecutive broadcast failures — reconnecting gossip topic...\x1b[0m", failures);
 
@@ -976,6 +982,7 @@ async fn main() -> anyhow::Result<()> {
                                     reconnect_shutdown.clone(),
                                 );
 
+                                last_reconnect = std::time::Instant::now();
                                 println!("\x1b[32m[RECONNECT] Gossip topic reconnected successfully.\x1b[0m");
                             }
                             Err(e) => {

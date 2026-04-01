@@ -528,11 +528,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut consecutive_failures: u64 = 0;
         let mut retry_queue: VecDeque<Vec<u8>> = VecDeque::new();
         let timeout_dur = std::time::Duration::from_secs(BROADCAST_TIMEOUT_SECS);
+        let mut last_reconnect = std::time::Instant::now();
 
         loop {
             tokio::select! {
                 _ = bcast_reconnect_notify.notified() => {
                     if !bcast_reconnect_requested.swap(false, Ordering::Relaxed) {
+                        continue;
+                    }
+                    if last_reconnect.elapsed() < std::time::Duration::from_secs(30) {
+                        eprintln!("\x1b[33m[RECONNECT] Skipping — reconnect cooldown active\x1b[0m");
                         continue;
                     }
                     eprintln!("\x1b[1;31m[RECONNECT] Watchdog requested full reconnect after repeated stalls...\x1b[0m");
@@ -574,6 +579,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             consecutive_failures = 0;
                             bcast_failure_count.store(0, Ordering::Relaxed);
+                            last_reconnect = std::time::Instant::now();
                             println!("\x1b[32m[RECONNECT] Gossip topic reconnected successfully.\x1b[0m");
                         }
                         Err(e) => {
@@ -635,11 +641,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     // Reconnect if enough consecutive failures
-                    if consecutive_failures == RECONNECT_AFTER_FAILURES {
+                    if consecutive_failures >= RECONNECT_AFTER_FAILURES {
                         // Reset immediately to prevent re-entrant reconnects
                         consecutive_failures = 0;
                         bcast_failure_count.store(0, Ordering::Relaxed);
 
+                        if last_reconnect.elapsed() < std::time::Duration::from_secs(30) {
+                            eprintln!("\x1b[33m[RECONNECT] Skipping — reconnect cooldown active\x1b[0m");
+                            continue;
+                        }
                         eprintln!("\x1b[1;31m[RECONNECT] {} broadcast failures — reconnecting gossip topic...\x1b[0m", RECONNECT_AFTER_FAILURES);
                         let old_gossip = bcast_gossip_handle.read().await;
                         match reconnect_gossip_topic(
@@ -703,7 +713,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 bcast_failure_count.store(0, Ordering::Relaxed);
                                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                                 bcast_last_ok.store(now, Ordering::Relaxed);
-                                println!("\x1b[32m[RECONNECT] Gossip topic reconnected successfully.\x1b[0m");
+                                last_reconnect = std::time::Instant::now();
+                            println!("\x1b[32m[RECONNECT] Gossip topic reconnected successfully.\x1b[0m");
                             }
                             Err(e) => {
                                 eprintln!("\x1b[1;31m[RECONNECT] Failed to reconnect gossip topic: {}. Will retry on next batch.\x1b[0m", e);
