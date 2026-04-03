@@ -1551,7 +1551,20 @@ fn spawn_receive_task(
     shutdown: Arc<AtomicBool>,
 ) {
     tokio::spawn(async move {
-        while let Some(event) = receiver.next().await {
+        let heartbeat_duration = std::time::Duration::from_secs(REBOOTSTRAP_TIMEOUT * 2);
+        loop {
+            let event = tokio::select! {
+                event = receiver.next() => {
+                    match event {
+                        Some(event) => event,
+                        None => break,
+                    }
+                }
+                _ = tokio::time::sleep(heartbeat_duration) => {
+                    eprintln!("\x1b[1;31m[RECV] No gossip events for {}s — gossip layer may be dead, triggering reconnect\x1b[0m", REBOOTSTRAP_TIMEOUT * 2);
+                    break;
+                }
+            };
             // Stop processing if a newer receive task has been spawned (reconnect happened)
             if receive_generation_counter.load(Ordering::Relaxed) != receive_generation {
                 println!("\x1b[33m[RECV] Stale receive task (gen {}) stopping, newer generation active.\x1b[0m", receive_generation);
