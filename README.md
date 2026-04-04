@@ -41,6 +41,9 @@ You need `rust` in order to run/compile this tool.
   * `ARCHIVE_ENABLED`
   * `NODE_FRIENDLY_NAME` to advertise a more friendly id.
 
+### Known Issues
+* `gossip-listener` uses the port `6881` so you might get a warning if ussing a Bitorrent tracker like ktorrent. You can use the Bitorrent client anyway, but it's not recommended to have both programs running on the same machine while testing.
+
 <br>
 
 ## Overview
