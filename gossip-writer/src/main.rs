@@ -553,7 +553,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("  Joining {} bootstrap peers...", bootstrap_peers.len());
         let sender = shared_sender.read().await;
-        if let Err(e) = sender.join_peers(bootstrap_peers, None).await {
+        if let Err(e) = sender.join_peers_direct(bootstrap_peers, None).await {
             eprintln!("  Warning: failed to join bootstrap peers: {}", e);
         }
     }
@@ -992,7 +992,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             peers.len()
                         );
                         let sender = watchdog_shared.read().await;
-                        if let Err(e) = sender.join_peers(peers, None).await {
+                        if let Err(e) = sender.join_peers_direct(peers, None).await {
                             eprintln!("\x1b[35m[WARN] Re-bootstrap failed: {}\x1b[0m", e);
                         }
                     }
@@ -1035,7 +1035,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !peers.is_empty() {
                     println!("\x1b[33m[REJOIN] Proactive re-join with {} peers to refresh gossip topology\x1b[0m", peers.len());
                     let sender = rejoin_shared.read().await;
-                    if let Err(e) = sender.join_peers(peers, None).await {
+                    if let Err(e) = sender.join_peers_direct(peers, None).await {
                         eprintln!("\x1b[35m[WARN] Periodic re-join failed: {}\x1b[0m", e);
                     }
                 }
