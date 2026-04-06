@@ -3,7 +3,7 @@ FROM rust:latest AS builder
 USER root
 
 RUN apt-get update \
-    && apt-get install -y ca-certificates libssl-dev libzmq3-dev capnproto pkg-config \
+    && apt-get install -y --no-install-recommends ca-certificates libssl-dev libzmq3-dev capnproto pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -19,7 +19,7 @@ FROM debian:trixie-slim AS runner
 USER root
 
 RUN apt-get update \
-    && apt-get install -y ca-certificates openssl libzmq5 \
+    && apt-get install -y --no-install-recommends ca-certificates openssl libzmq5 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /data/gossip /opt/gossip-writer \
