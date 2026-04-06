@@ -34,7 +34,7 @@ jobs:
       is_release: ${{ steps.get_version.outputs.IS_RELEASE }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6
 
       - name: Extract Version
         id: get_version
@@ -62,7 +62,7 @@ jobs:
     needs: prepare
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
